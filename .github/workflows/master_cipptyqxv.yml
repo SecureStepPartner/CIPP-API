@@ -30,11 +30,18 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_EE4AF0B4FE564113A83899CE28DB7D78 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_41455ABD77FF41BA9A5DC8697E304AAC }}
 
-      - name: 'Run Azure Functions Action'
+      - name: 'Deploy main CIPP API'
         uses: Azure/functions-action@v1
-        id: fa
+        id: deploy-main
         with:
           app-name: 'cipptyqxv'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          
+
+      - name: 'Deploy CIPP background processor'
+        uses: Azure/functions-action@v1
+        id: deploy-processor
+        with:
+          app-name: 'cipptyqxv-proc'
+          slot-name: 'Production'
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
