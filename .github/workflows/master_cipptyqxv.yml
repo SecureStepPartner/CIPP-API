@@ -9,39 +9,70 @@ on:
       - master
   workflow_dispatch:
 
+concurrency:
+  group: cipp-api-production
+  cancel-in-progress: false
+
 env:
   AZURE_FUNCTIONAPP_PACKAGE_PATH: '.' # set this to the path to your web app project, defaults to the repository root
 
 jobs:
   deploy:
     runs-on: windows-latest
+    environment: production
     permissions:
       id-token: write #This is required for requesting the JWT
       contents: read #This is required for actions/checkout
 
     steps:
       - name: 'Checkout GitHub Action'
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       
       - name: Login to Azure
-        uses: azure/login@v3.1.0
+        uses: azure/login@053f7285eb20bf5469ef084617b0b24d3cec53fc # v3.1.0
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_FA2D8F7E95A14E5F8A764066CFC8D025 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_EE4AF0B4FE564113A83899CE28DB7D78 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_41455ABD77FF41BA9A5DC8697E304AAC }}
 
+      - name: 'Create shared deployment artifact'
+        shell: pwsh
+        run: Compress-Archive -Path * -DestinationPath cipp-api.zip -Force
+
+      - name: 'Upload shared deployment artifact'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cipp-api-package
+          path: cipp-api.zip
+          if-no-files-found: error
+
       - name: 'Deploy main CIPP API'
-        uses: Azure/functions-action@v1.5.7
+        uses: Azure/functions-action@f9b4a151693661b043f188d9440fb20ed5fa7156 # v1.5.7
         id: deploy-main
         with:
           app-name: 'cipptyqxv'
           slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: cipp-api.zip
 
       - name: 'Deploy CIPP background processor'
-        uses: Azure/functions-action@v1.5.7
+        uses: Azure/functions-action@f9b4a151693661b043f188d9440fb20ed5fa7156 # v1.5.7
         id: deploy-processor
         with:
           app-name: 'cipptyqxv-proc'
           slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: cipp-api.zip
+
+      - name: 'Validate deployed Function Apps'
+        shell: pwsh
+        run: |
+          $expected = (Get-Content -Raw version_latest.txt).Trim()
+          foreach ($app in @('cipptyqxv', 'cipptyqxv-proc')) {
+            $state = az functionapp show -g rg-cipp-prod-central -n $app --query state -o tsv
+            if ($state -ne 'Running') { throw "$app is $state, expected Running" }
+            $credentials = az webapp deployment list-publishing-credentials -g rg-cipp-prod-central -n $app | ConvertFrom-Json
+            $pair = "$($credentials.publishingUserName):$($credentials.publishingPassword)"
+            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+            $actual = (Invoke-RestMethod -Uri "https://$app.scm.azurewebsites.net/api/vfs/site/wwwroot/version_latest.txt" -Headers @{ Authorization = "Basic $auth" }).Trim()
+            if ($actual -ne $expected) { throw "$app deployed version $actual, expected $expected" }
+            Write-Host "$app is Running with CIPP API $actual"
+          }
